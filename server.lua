@@ -1,646 +1,642 @@
-local FormattedToken = "Bot " .. Config.Bot_Token
+-- JMS_Discord_API
+-- Discord REST wrapper for FiveM. Fork of Badger_Discord_API (MIT, Jared Scarito).
+--
+-- Use from other resources with:
+--     exports.JMS_Discord_API:GetDiscordRoles(source)
+--     exports.Badger_Discord_API:GetDiscordRoles(source)   -- also works, see `provide` in fxmanifest.lua
+--
+-- Anywhere a `user` is accepted you can pass a player source OR a raw Discord ID string.
+-- Anywhere a `guild` is accepted you can pass a name from Config.Guilds, a guild ID, or nil for Config.Guild_ID.
 
-local error_codes_defined = {
-	[200] = 'OK - The request was completed successfully..!',
-	[204] = 'OK - No Content',
-	[400] = "Error - The request was improperly formatted, or the server couldn't understand it..!",
-	[401] = 'Error - The Authorization header was missing or invalid..! Your Discord Token is probably wrong or does not have correct permissions attributed to it.',
-	[403] = 'Error - The Authorization token you passed did not have permission to the resource..! Your Discord Token is probably wrong or does not have correct permissions attributed to it.',
-	[404] = "Error - The resource at the location specified doesn't exist.",
-	[429] = 'Error - Too many requests, you hit the Discord rate limit. https://discord.com/developers/docs/topics/rate-limits',
-	[502] = 'Error - Discord API may be down?...'
-};
+local RESOURCE = GetCurrentResourceName()
+local API_BASE = 'https://discord.com/api/v10/'
+local TOKEN = GetConvar('discord_bot_token', '')
 
-Citizen.CreateThread(function()
-	if (GetCurrentResourceName() ~= "Badger_Discord_API") then 
-		--StopResource(GetCurrentResourceName());
-		print("[" .. GetCurrentResourceName() .. "] " .. "IMPORTANT: This resource must be named Badger_Discord_API for it to work properly with other scripts...");
-	end
-	print("[Badger_Discord_API] For support, make sure to join Badger's official Discord server: discord.gg/WjB5VFz");
-	print('^7[^2Zap-Hosting^7] ^3Use code ^5TheWolfBadger-4765 ^3at checkout for ^220% ^3off of selected services. Visit ^5https://zap-hosting.com/badger ^3to get started!');
-end)
+local MAX_ATTEMPTS = 3 -- total tries when Discord answers 429
+local REQUEST_TIMEOUT_MS = 10000
+local AVATAR_CACHE_MS = 10 * 60 * 1000
+local SWEEP_INTERVAL_MS = 5 * 60 * 1000
 
-function sendDebugMessage(msg)
-	print("^1[^5Badger_Discord_API^1] ^3" .. msg);
+-- ---------------------------------------------------------------------------
+-- Logging / helpers
+-- ---------------------------------------------------------------------------
+
+local HTTP_STATUS = {
+	[-1] = 'The bot token is not set. Add `set discord_bot_token "..."` to server.cfg.',
+	[0] = 'No response from Discord (network error or timeout).',
+	[400] = 'Bad request - Discord rejected the request (check the IDs involved).',
+	[401] = 'Unauthorized - the bot token is invalid.',
+	[403] = 'Forbidden - the bot lacks the permission, or the target member outranks the bot.',
+	[404] = 'Not found - wrong guild/user/role ID, or that user is not in the guild.',
+	[429] = 'Rate limited by Discord.',
+	[500] = 'Discord server error.',
+	[502] = 'Discord is unreachable (bad gateway).',
+	[503] = 'Discord is unavailable.',
+}
+
+local function logError(fn, msg)
+	print(('^1[%s]^7 %s: %s'):format(RESOURCE, fn, msg))
 end
 
-tracked = {}
+local function logInfo(msg)
+	print(('^2[%s]^7 %s'):format(RESOURCE, msg))
+end
 
-RegisterNetEvent('Badger_Discord_API:PlayerLoaded')
-AddEventHandler('Badger_Discord_API:PlayerLoaded', function()
-	if (GetCurrentResourceName() ~= "Badger_Discord_API") then 
-		TriggerClientEvent('chatMessage', -1, '^1[^5SCRIPT ERROR^1] ^3The script ^1' .. GetCurrentResourceName() .. ' ^3will not work properly... You must '
-	.. 'rename the resource to ^1Badger_Discord_API');
+local function logDebug(msg)
+	if Config.DebugScript then
+		print(('^5[%s]^7 %s'):format(RESOURCE, msg))
 	end
-	local license = GetIdentifier(source, 'license');
-	if (tracked[license] == nil) then 
-		tracked[license] = true;
-		TriggerClientEvent('chatMessage', source, 
-		'^1[^5Badger_Discord_API^1] ^3The Discord API script was created by Badger. You may join his Discord at: ^6discord.gg/WjB5VFz')
-	end
-	TriggerClientEvent('chatMessage', source, 
-		'^7[^2Zap-Hosting^7] ^3Use code ^5TheWolfBadger-4765 ^3at checkout for ^220% ^3off of selected services. Visit ^5https://zap-hosting.com/badger ^3to get started!');
-end)
+end
 
-card = '{"type":"AdaptiveCard","$schema":"http://adaptivecards.io/schemas/adaptive-card.json","version":"1.4","body":[{"type":"Image","url":"' .. Config.Splash.Header_IMG .. '","horizontalAlignment":"Center"},{"type":"Container","items":[{"type":"TextBlock","text":"Badger_Discord_API","wrap":true,"fontType":"Default","size":"ExtraLarge","weight":"Bolder","color":"Light","horizontalAlignment":"Center"},{"type":"TextBlock","text":"' .. Config.Splash.Heading1 .. '","wrap":true,"size":"Large","weight":"Bolder","color":"Light","horizontalAlignment":"Center"},{"type":"TextBlock","text":"' .. Config.Splash.Heading2 .. '","wrap":true,"color":"Light","size":"Medium","horizontalAlignment":"Center"},{"type":"ColumnSet","height":"stretch","minHeight":"100px","bleed":true,"horizontalAlignment":"Center","columns":[{"type":"Column","width":"stretch","items":[{"type":"ActionSet","actions":[{"type":"Action.OpenUrl","title":"Discord","url":"' .. Config.Splash.Discord_Link .. '","style":"positive"}],"horizontalAlignment":"Right"}],"height":"stretch"},{"type":"Column","width":"stretch","items":[{"type":"ActionSet","actions":[{"type":"Action.OpenUrl","title":"Website","style":"positive","url":"' .. Config.Splash.Website_Link .. '"}],"horizontalAlignment":"Left"}]}]},{"type":"ActionSet","actions":[{"type":"Action.OpenUrl","title":"Click to join Badger\'s Discord","style":"destructive","iconUrl":"https://i.gyazo.com/0904b936e8e30d0104dec44924bd2294.gif","url":"https://discord.com/invite/WjB5VFz"}],"horizontalAlignment":"Center"}],"style":"default","bleed":true,"height":"stretch"},{"type":"Image","url":"https://i.gyazo.com/7e896862b14be754ae8bad90b664a350.png","selectAction":{"type":"Action.OpenUrl","url":"https://zap-hosting.com/badger"},"horizontalAlignment":"Center"}]}'
-if Config.Splash.Enabled then 
-	AddEventHandler('playerConnecting', function(name, setKickReason, deferrals) 
-		-- Player is connecting
-		deferrals.defer();
-		local src = source;
-		local toEnd = false;
-		local count = 0;
-		while not toEnd do 
-			deferrals.presentCard(card,
-			function(data, rawData)
-			end)
-			Wait((1000))
-			count = count + 1;
-			if count == Config.Splash.Wait then 
-				toEnd = true;
-			end
-		end
-		deferrals.done();
+local function safeDecode(str)
+	if type(str) ~= 'string' or str == '' then return nil end
+	local ok, data = pcall(json.decode, str)
+	if ok then return data end
+	return nil
+end
+
+local function describe(code, body)
+	local text = HTTP_STATUS[code] or ('Unexpected HTTP status ' .. tostring(code) .. '.')
+	local data = safeDecode(body)
+	if type(data) == 'table' and data.message then
+		text = text .. ' Discord says: ' .. tostring(data.message)
+	end
+	return text
+end
+
+local function isOk(res)
+	return res ~= nil and type(res.code) == 'number' and res.code >= 200 and res.code < 300
+end
+
+local function urlEncode(str)
+	return (tostring(str):gsub('[^%w%-_%.~]', function(c)
+		return ('%%%02X'):format(c:byte())
+	end))
+end
+
+local function headerValue(headers, name)
+	if type(headers) ~= 'table' then return nil end
+	name = name:lower()
+	for k, v in pairs(headers) do
+		if tostring(k):lower() == name then return v end
+	end
+	return nil
+end
+
+local function copyArray(t)
+	local c = {}
+	for i = 1, #t do c[i] = t[i] end
+	return c
+end
+
+local function copyMap(t)
+	local c = {}
+	for k, v in pairs(t) do c[k] = v end
+	return c
+end
+
+local function isSnowflake(value)
+	local s = tostring(value)
+	return s:match('^%d+$') ~= nil and #s >= 15
+end
+
+-- ---------------------------------------------------------------------------
+-- HTTP
+-- ---------------------------------------------------------------------------
+
+-- One HTTP round trip. Always resolves exactly once (a timeout resolves it with code 0).
+local function rawRequest(method, endpoint, payload, reason)
+	local p = promise.new()
+	local settled = false
+	local function settle(result)
+		if settled then return end
+		settled = true
+		p:resolve(result)
+	end
+
+	local headers = {
+		['Content-Type'] = 'application/json',
+		['Authorization'] = 'Bot ' .. TOKEN,
+	}
+	if reason and reason ~= '' then
+		headers['X-Audit-Log-Reason'] = urlEncode(reason)
+	end
+
+	SetTimeout(REQUEST_TIMEOUT_MS, function()
+		settle({ code = 0, data = nil, headers = {} })
 	end)
-end 
 
-function GetIdentifier(source, id_type)
-    if type(id_type) ~= "string" then return; end
-    for _, identifier in pairs(GetPlayerIdentifiers(source)) do
-        if string.find(identifier, id_type) then
-            return identifier
-        end
-    end
-    return nil
+	PerformHttpRequest(API_BASE .. endpoint, function(code, data, resultHeaders)
+		settle({ code = code, data = data, headers = resultHeaders or {} })
+	end, method, payload, headers)
+
+	return Citizen.Await(p)
 end
 
-function GetGuildId (guildName)
-  local result = tostring(Config.Guild_ID)
-  if guildName and Config.Guilds[guildName] then
-    result = tostring(Config.Guilds[guildName])
-  end
-  return result
+-- body: table (JSON-encoded for you), a pre-encoded JSON string, or nil.
+-- Returns { code = <number>, data = <raw body string>, headers = <table> }.
+local function DiscordRequest(method, endpoint, body, reason)
+	if TOKEN == '' then
+		return { code = -1, data = nil, headers = {} }
+	end
+
+	local payload = ''
+	if type(body) == 'table' then
+		payload = json.encode(body)
+	elseif type(body) == 'string' then
+		payload = body
+	end
+
+	local res
+	for attempt = 1, MAX_ATTEMPTS do
+		res = rawRequest(method, endpoint, payload, reason)
+		if res.code ~= 429 or attempt == MAX_ATTEMPTS then break end
+
+		local waitSeconds = tonumber(headerValue(res.headers, 'retry-after'))
+		if not waitSeconds then
+			local data = safeDecode(res.data)
+			waitSeconds = type(data) == 'table' and tonumber(data.retry_after) or 1
+		end
+		waitSeconds = math.min(math.max(waitSeconds, 0.1), 10)
+		logDebug(('429 on %s %s, retrying in %.1fs (attempt %d/%d)'):format(method, endpoint, waitSeconds, attempt, MAX_ATTEMPTS))
+		Wait(math.floor(waitSeconds * 1000) + 50)
+	end
+	return res
 end
 
-function DiscordRequest(method, endpoint, jsondata, reason)
-    local data = nil
-    PerformHttpRequest("https://discord.com/api/"..endpoint, function(errorCode, resultData, resultHeaders)
-		data = {data=resultData, code=errorCode, headers=resultHeaders}
-    end, method, #jsondata > 0 and jsondata or "", {["Content-Type"] = "application/json", ["Authorization"] = FormattedToken, ['X-Audit-Log-Reason'] = reason})
+-- ---------------------------------------------------------------------------
+-- IDs
+-- ---------------------------------------------------------------------------
 
-    while data == nil do
-        Citizen.Wait(0)
-    end
-	
-    return data
+-- `user` may be a player source or a Discord ID. Returns the Discord ID string or nil.
+local function getDiscordId(user)
+	if user == nil then return nil end
+	if isSnowflake(user) then return tostring(user) end
+	local identifier = GetPlayerIdentifierByType(tostring(user), 'discord')
+	if identifier then
+		return (identifier:gsub('^discord:', ''))
+	end
+	return nil
 end
 
-function GetRoleIdFromRoleName(name, guild --[[optional]])
-  local guildId = GetGuildId(guild)
-	if (Caches.RoleList[guildId] ~= nil) then 
-		return tonumber(Caches.RoleList[guildId][name]);
-	else 
-		local roles = GetGuildRoleList(guild);
-		return tonumber(roles[name]);
+-- Returns a guild ID string, or nil if `guild` was given but is not recognised.
+-- (The original silently fell back to the main guild, which risks writing to the wrong server.)
+local function resolveGuildId(guild, fn)
+	if guild ~= nil then
+		local named = Config.Guilds and Config.Guilds[guild]
+		if named then return tostring(named) end
+		if isSnowflake(guild) then return tostring(guild) end
+		logError(fn or 'resolveGuildId', ('unknown guild "%s" (not in Config.Guilds and not an ID)'):format(tostring(guild)))
+		return nil
+	end
+	if Config.Guild_ID == nil or tostring(Config.Guild_ID) == '' then
+		logError(fn or 'resolveGuildId', 'Config.Guild_ID is not set')
+		return nil
+	end
+	return tostring(Config.Guild_ID)
+end
+
+-- ---------------------------------------------------------------------------
+-- Caches (always hand out copies so callers cannot corrupt them)
+-- ---------------------------------------------------------------------------
+
+local roleCache = {} -- "guildId:discordId" -> { roles = {...}, expires = ms }
+local roleListCache = {} -- guildId -> { list = {name -> id}, expires = ms }
+local avatarCache = {} -- discordId -> { url = "...", expires = ms }
+
+local function now()
+	return GetGameTimer()
+end
+
+local function sweepCaches()
+	local t = now()
+	for k, e in pairs(roleCache) do if e.expires <= t then roleCache[k] = nil end end
+	for k, e in pairs(roleListCache) do if e.expires <= t then roleListCache[k] = nil end end
+	for k, e in pairs(avatarCache) do if e.expires <= t then avatarCache[k] = nil end end
+	SetTimeout(SWEEP_INTERVAL_MS, sweepCaches)
+end
+SetTimeout(SWEEP_INTERVAL_MS, sweepCaches)
+
+local function ResetCaches()
+	roleCache = {}
+	roleListCache = {}
+	avatarCache = {}
+end
+
+-- Drops cached roles for one user (all guilds). `user` = source or Discord ID.
+local function ClearCache(user)
+	local discordId = getDiscordId(user)
+	if not discordId then return end
+	local suffix = ':' .. discordId
+	for key in pairs(roleCache) do
+		if key:sub(-#suffix) == suffix then roleCache[key] = nil end
 	end
 end
 
-function FetchRoleID(roleID2Check, guild --[[optional]])
-    -- You gave me an ID, here it is back to you.
-    if type(roleID2Check) == "number" then return roleID2Check end
-    -- You gave me a non-string, non-number. I can't help you.
-    if type(roleID2Check) ~= "string" then return nil end
+-- ---------------------------------------------------------------------------
+-- Roles (read)
+-- ---------------------------------------------------------------------------
 
-	if type(roleID2Check) == "string" then 
-		if (tonumber(roleID2Check) ~= nil) then 
-			return tonumber(roleID2Check);
+-- Returns an array of role IDs (strings) or nil, httpCode on failure.
+local function getUserRolesInGuild(discordId, guildId)
+	local key = guildId .. ':' .. discordId
+	if Config.CacheDiscordRoles then
+		local entry = roleCache[key]
+		if entry and entry.expires > now() then
+			return copyArray(entry.roles)
 		end
 	end
 
-    -- It's a string, therefore name -- search config rolelist
-    local rolesListFromConfig = Config.RoleList
-    if rolesListFromConfig[roleID2Check] then
-      -- It's a named role in the config. Here you go!
-      return tonumber(rolesListFromConfig[roleID2Check])
-    end
-    -- Oops, didn't find in config rolelist, search by name in current guild
-    if (guild ~= nil) then 
-        local fetchedRolesList = GetGuildRoleList(guild)
-        if fetchedRolesList[roleID2Check] then
-			-- We found it in the current guild. Here you go!
-	    	return tonumber(fetchedRolesList[roleID2Check])
-		end
-    end
-    -- Okay, still no luck. Search Main guild for role by name (if main isn't current guild)
-    if GetGuildId(guild) ~= tostring(Config.Guild_ID) then
-    	local mainRolesList = GetGuildRoleList()
-    	if mainRolesList[roleID2Check] then
-        	-- We found it in the current guild. Here you go!
-        	return tonumber(mainRolesList[roleID2Check])
-      	end
-    end
-    -- Big oops, didn't find in current guild, or main guild. Search by name in all guilds!
-    --[[
-    -- Due to a security flaw in the below code, it was redacted for good reason...
-    if (Config.Multiguild and not roleFound) then
-      for guildName, guildID in pairs(Config.Guilds) do
-        local thisRolesList = GetGuildRoleList(guildName)
-        if thisRolesList[roleID2Check] then
-          -- We found it in the current guild. Here you go!
-          return tonumber(thisRolesList[roleID2Check])
-        end
-      end
-    end
-    ]]--
-    return nil -- Sorry, couldn't find anywhere
-end
-
-function CheckEqual(role1, role2, guild --[[optional]])
-    local roleID1 = FetchRoleID(role1, guild);
-    local roleID2 = FetchRoleID(role2, guild);
-	-- If they are the same exact name or ID & same type, they are equal
-    if (type(roleID1) ~= "nil" and type(roleID2) ~= "nil") and roleID1 == roleID2 then
-		return true
-    end
-	-- If they can be forced to number and they are the same ID, they are equal
-    if ((tonumber(roleID1) ~= nil) and (tonumber(roleID1) == tonumber(roleID2))) then
-        return true
-    end
-
-    return false
-end
-
-function IsDiscordEmailVerified(user) 
-    local discordId = nil
-    local isVerified = false;
-    for _, id in ipairs(GetPlayerIdentifiers(user)) do
-        if string.match(id, "discord:") then
-            discordId = string.gsub(id, "discord:", "")
-            break
-        end
-    end
-    if discordId then 
-        local endpoint = ("users/%s"):format(discordId)
-        local member = DiscordRequest("GET", endpoint, {})
-        if member.code == 200 then
-            local data = json.decode(member.data)
-            if data ~= nil then 
-                -- It is valid data 
-                isVerified = data.verified;
-            end
-        else 
-        	sendDebugMessage("[Badger_Discord_API] ERROR: Code 200 was not reached. DETAILS: " .. error_codes_defined[member.code]);
-        end
-    end
-    return isVerified;
-end
-
-function GetDiscordEmail(user) 
-    local discordId = nil
-    local emailData = nil;
-    for _, id in ipairs(GetPlayerIdentifiers(user)) do
-        if string.match(id, "discord:") then
-            discordId = string.gsub(id, "discord:", "")
-            break
-        end
-    end
-    if discordId then 
-        local endpoint = ("users/%s"):format(discordId)
-        local member = DiscordRequest("GET", endpoint, {})
-        if member.code == 200 then
-            local data = json.decode(member.data)
-            if data ~= nil then 
-                -- It is valid data 
-                emailData = data.email;
-            end
-        else 
-        	sendDebugMessage("[Badger_Discord_API] ERROR: Code 200 was not reached. DETAILS: " .. error_codes_defined[member.code])
-        end
-    end
-    return emailData;
-end
-
-function GetDiscordName(user) 
-    local discordId = nil
-    local nameData = nil;
-    for _, id in ipairs(GetPlayerIdentifiers(user)) do
-        if string.match(id, "discord:") then
-            discordId = string.gsub(id, "discord:", "")
-            break
-        end
-    end
-    if discordId then 
-        local endpoint = ("users/%s"):format(discordId)
-        local member = DiscordRequest("GET", endpoint, {})
-        if member.code == 200 then
-            local data = json.decode(member.data)
-            if data ~= nil then 
-			-- It is valid data 
-			if data.discriminator == 0 or data.discriminator == "0" then 
-				return data.username 
-			end			
-				nameData = data.username .. "#" .. data.discriminator;
-			end
-		else 
-			sendDebugMessage("[Badger_Discord_API] ERROR: Code 200 was not reached. DETAILS: " .. error_codes_defined[member.code])
-		end
-    end
-    return nameData;
-end
-
-function GetGuildIcon(guild --[[optional]])
-  local guildId = GetGuildId(guild)
-	local guild = DiscordRequest("GET", "guilds/"..guildId, {})
-	if guild.code == 200 then
-		local data = json.decode(guild.data)
-		if (data.icon:sub(1, 1) and data.icon:sub(2, 2) == "_") then 
-			-- It's a gif 
-			return 'https://cdn.discordapp.com/icons/' .. Config.Guild_ID .. "/" .. data.icon .. ".gif";
-		else 
-			-- Image 
-			return 'https://cdn.discordapp.com/icons/' .. Config.Guild_ID .. "/" .. data.icon .. ".png";
-		end 
-	else
-		sendDebugMessage("[Badger_Discord_API] An error occured, please check your config and ensure everything is correct. Error: "..(guild.data or guild.code)) 
+	local res = DiscordRequest('GET', ('guilds/%s/members/%s'):format(guildId, discordId))
+	if not isOk(res) then
+		logError('GetUserRolesInGuild', describe(res.code, res.data))
+		return nil, res.code
 	end
-	return nil;
+
+	local data = safeDecode(res.data)
+	if type(data) ~= 'table' or type(data.roles) ~= 'table' then
+		logError('GetUserRolesInGuild', 'unexpected response from Discord')
+		return nil, res.code
+	end
+
+	if Config.CacheDiscordRoles then
+		roleCache[key] = {
+			roles = copyArray(data.roles),
+			expires = now() + (Config.CacheDiscordRolesTime or 60) * 1000,
+		}
+	end
+	return copyArray(data.roles)
 end
 
-function GetGuildSplash(guild --[[optional]])
-  local guildId = GetGuildId(guild)
-	local guild = DiscordRequest("GET", "guilds/"..guildId, {})
-	if guild.code == 200 then
-		local data = json.decode(guild.data)
-		-- Image 
-		return 'https://cdn.discordapp.com/splashes/' .. Config.Guild_ID .. "/" .. data.icon .. ".png";
-	else
-		sendDebugMessage("[Badger_Discord_API] An error occured, please check your config and ensure everything is correct. Error: "..(guild.data or guild.code)) 
+-- Returns an array of role ID strings, or false if the lookup failed or the player has no Discord linked.
+-- With Config.Multiguild and no `guild`, roles from every guild in Config.Guilds are merged (deduplicated).
+local function GetDiscordRoles(user, guild)
+	local discordId = getDiscordId(user)
+	if not discordId then
+		logError('GetDiscordRoles', 'no Discord identifier for this player (is Discord running on their PC?)')
+		return false
 	end
-	return nil;
-end 
+	local guildId = resolveGuildId(guild, 'GetDiscordRoles')
+	if not guildId then return false end
 
-function GetGuildName(guild --[[optional]])
-  local guildId = GetGuildId(guild)
-	local guild = DiscordRequest("GET", "guilds/"..guildId, {})
-	if guild.code == 200 then
-		local data = json.decode(guild.data)
-		-- Image 
-		return data.name;
-	else
-		sendDebugMessage("[Badger_Discord_API] An error occured, please check your config and ensure everything is correct. Error: "..(guild.data or guild.code)) 
-	end
-	return nil;
-end
+	local roles = getUserRolesInGuild(discordId, guildId)
+	if not roles then return false end
 
-function GetGuildDescription(guild --[[optional]])
-  local guildId = GetGuildId(guild)
-	local guild = DiscordRequest("GET", "guilds/"..guildId, {})
-	if guild.code == 200 then
-		local data = json.decode(guild.data)
-		-- Image 
-		return data.description;
-	else
-		sendDebugMessage("[Badger_Discord_API] An error occured, please check your config and ensure everything is correct. Error: "..(guild.data or guild.code)) 
+	if guild ~= nil or not Config.Multiguild then
+		return roles
 	end
-	return nil;
-end
 
-function GetGuildMemberCount(guild --[[optional]])
-  local guildId = GetGuildId(guild)
-	local guild = DiscordRequest("GET", "guilds/"..guildId.."?with_counts=true", {})
-	if guild.code == 200 then
-		local data = json.decode(guild.data)
-		-- Image 
-		return data.approximate_member_count;
-	else
-		sendDebugMessage("[Badger_Discord_API] An error occured, please check your config and ensure everything is correct. Error: "..(guild.data or guild.code)) 
-	end
-	return nil;
-end
-
-function GetGuildOnlineMemberCount(guild --[[optional]])
-  local guildId = GetGuildId(guild)
-	local guild = DiscordRequest("GET", "guilds/"..guildId.."?with_counts=true", {})
-	if guild.code == 200 then
-		local data = json.decode(guild.data)
-		return data.approximate_presence_count;
-	else
-		sendDebugMessage("[Badger_Discord_API] An error occured, please check your config and ensure everything is correct. Error: "..(guild.data or guild.code)) 
-	end
-	return nil;
-end
-
-function GetDiscordAvatar(user) 
-    local discordId = nil
-    local imgURL = nil;
-    for _, id in ipairs(GetPlayerIdentifiers(user)) do
-        if string.match(id, "discord:") then
-            discordId = string.gsub(id, "discord:", "")
-            break
-        end
-	end
-	if discordId then 
-		if Caches.Avatars[discordId] == nil then 
-			local endpoint = ("users/%s"):format(discordId)
-			local member = DiscordRequest("GET", endpoint, {})
-			if member.code == 200 then
-				local data = json.decode(member.data)
-				if data ~= nil and data.avatar ~= nil then 
-					-- It is valid data 
-					if (data.avatar:sub(1, 1) and data.avatar:sub(2, 2) == "_") then 
-						imgURL = "https://cdn.discordapp.com/avatars/" .. discordId .. "/" .. data.avatar .. ".gif";
-					else 
-						imgURL = "https://cdn.discordapp.com/avatars/" .. discordId .. "/" .. data.avatar .. ".png"
+	local seen = {}
+	for _, r in ipairs(roles) do seen[r] = true end
+	for _, otherId in pairs(Config.Guilds or {}) do
+		otherId = tostring(otherId)
+		if otherId ~= guildId and isSnowflake(otherId) then
+			local extra = getUserRolesInGuild(discordId, otherId)
+			if extra then
+				for _, r in ipairs(extra) do
+					if not seen[r] then
+						seen[r] = true
+						roles[#roles + 1] = r
 					end
 				end
-			else 
-				sendDebugMessage("[Badger_Discord_API] ERROR: Code 200 was not reached. DETAILS: " .. error_codes_defined[member.code])
 			end
-			Caches.Avatars[discordId] = imgURL;
-		else 
-			imgURL = Caches.Avatars[discordId];
-		end 
-	else 
-		sendDebugMessage("[Badger_Discord_API] ERROR: Discord ID was not found...")
+		end
 	end
-    return imgURL;
+	return roles
 end
 
-Caches = {
-	Avatars = {},
-  RoleList = {}
+-- ---------------------------------------------------------------------------
+-- Role names / IDs
+-- ---------------------------------------------------------------------------
+
+-- Returns { [roleName] = roleId(string) } or nil on failure.
+local function GetGuildRoleList(guild)
+	local guildId = resolveGuildId(guild, 'GetGuildRoleList')
+	if not guildId then return nil end
+
+	local entry = roleListCache[guildId]
+	if entry and entry.expires > now() then
+		return copyMap(entry.list)
+	end
+
+	local res = DiscordRequest('GET', 'guilds/' .. guildId .. '/roles')
+	if not isOk(res) then
+		logError('GetGuildRoleList', describe(res.code, res.data))
+		return nil
+	end
+	local data = safeDecode(res.data)
+	if type(data) ~= 'table' then
+		logError('GetGuildRoleList', 'unexpected response from Discord')
+		return nil
+	end
+
+	local list = {}
+	for _, role in ipairs(data) do
+		list[role.name] = tostring(role.id)
+	end
+	roleListCache[guildId] = { list = list, expires = now() + (Config.RoleListCacheTime or 300) * 1000 }
+	return copyMap(list)
+end
+
+-- Returns the role ID as a number, or nil.
+local function GetRoleIdFromRoleName(name, guild)
+	local list = GetGuildRoleList(guild)
+	if not list then return nil end
+	return tonumber(list[name])
+end
+
+-- Accepts a role ID (number or numeric string), a name from Config.RoleList, or a role name in the guild.
+-- Returns the role ID as a number, or nil.
+local function FetchRoleID(role, guild)
+	if type(role) == 'number' then return role end
+	if type(role) ~= 'string' then return nil end
+	if role:match('^%d+$') then return tonumber(role) end
+
+	if Config.RoleList and Config.RoleList[role] then
+		return tonumber(Config.RoleList[role])
+	end
+
+	local list = GetGuildRoleList(guild)
+	if list and list[role] then return tonumber(list[role]) end
+
+	-- Not in the requested guild: fall back to the main guild.
+	if guild ~= nil then
+		local main = GetGuildRoleList()
+		if main and main[role] then return tonumber(main[role]) end
+	end
+	return nil
+end
+
+local function CheckEqual(role1, role2, guild)
+	local a = FetchRoleID(role1, guild)
+	local b = FetchRoleID(role2, guild)
+	return a ~= nil and b ~= nil and a == b
+end
+
+-- Role string for REST paths/bodies. Snowflakes must stay strings or JSON can mangle them.
+local function resolveRoleString(role, guild)
+	if type(role) == 'string' and role:match('^%d+$') then return role end
+	local id = FetchRoleID(role, guild)
+	if id == nil then return nil end
+	return tostring(math.tointeger(id) or id)
+end
+
+-- ---------------------------------------------------------------------------
+-- Member writes
+-- ---------------------------------------------------------------------------
+
+local function memberCall(fn, user, guild, method, subpath, body, reason)
+	local discordId = getDiscordId(user)
+	if not discordId then
+		logError(fn, 'no Discord identifier for this player (is Discord running on their PC?)')
+		return false
+	end
+	local guildId = resolveGuildId(guild, fn)
+	if not guildId then return false end
+
+	local endpoint = ('guilds/%s/members/%s%s'):format(guildId, discordId, subpath or '')
+	local res = DiscordRequest(method, endpoint, body, reason)
+	if not isOk(res) then
+		logError(fn, describe(res.code, res.data))
+		return false, res.code
+	end
+
+	roleCache[guildId .. ':' .. discordId] = nil
+	return true, res.code
+end
+
+-- Adds one role without touching the member's other roles. Returns true/false, httpCode.
+local function AddRole(user, roleId, reason, guild)
+	local role = resolveRoleString(roleId, guild)
+	if not role then
+		logError('AddRole', ('could not resolve role "%s"'):format(tostring(roleId)))
+		return false
+	end
+	return memberCall('AddRole', user, guild, 'PUT', '/roles/' .. role, nil, reason)
+end
+
+-- Removes one role without touching the member's other roles. Returns true/false, httpCode.
+local function RemoveRole(user, roleId, reason, guild)
+	local role = resolveRoleString(roleId, guild)
+	if not role then
+		logError('RemoveRole', ('could not resolve role "%s"'):format(tostring(roleId)))
+		return false
+	end
+	return memberCall('RemoveRole', user, guild, 'DELETE', '/roles/' .. role, nil, reason)
+end
+
+-- REPLACES all of the member's roles with roleList. Pass the complete list you want them to end up with.
+local function SetRoles(user, roleList, reason, guild)
+	if type(roleList) ~= 'table' then
+		logError('SetRoles', 'roleList must be an array of role IDs')
+		return false
+	end
+	local roles = {}
+	for _, r in ipairs(roleList) do
+		local role = resolveRoleString(r, guild)
+		if not role then
+			logError('SetRoles', ('could not resolve role "%s", nothing was changed'):format(tostring(r)))
+			return false
+		end
+		roles[#roles + 1] = role
+	end
+	return memberCall('SetRoles', user, guild, 'PATCH', '', { roles = roles }, reason)
+end
+
+-- nickname nil or "" resets the nickname.
+local function SetNickname(user, nickname, reason, guild)
+	return memberCall('SetNickname', user, guild, 'PATCH', '', { nick = tostring(nickname or '') }, reason)
+end
+
+-- Moves a member who is ALREADY in a voice channel. Discord returns 400 otherwise.
+local function ChangeDiscordVoice(user, voice, reason, guild)
+	return memberCall('ChangeDiscordVoice', user, guild, 'PATCH', '', { channel_id = tostring(voice) }, reason)
+end
+
+-- ---------------------------------------------------------------------------
+-- User / member lookups
+-- ---------------------------------------------------------------------------
+
+local function getUserObject(fn, user)
+	local discordId = getDiscordId(user)
+	if not discordId then
+		logError(fn, 'no Discord identifier for this player (is Discord running on their PC?)')
+		return nil
+	end
+	local res = DiscordRequest('GET', 'users/' .. discordId)
+	if not isOk(res) then
+		logError(fn, describe(res.code, res.data))
+		return nil
+	end
+	local data = safeDecode(res.data)
+	if type(data) ~= 'table' then
+		logError(fn, 'unexpected response from Discord')
+		return nil
+	end
+	return data, discordId
+end
+
+local function GetDiscordName(user)
+	local data = getUserObject('GetDiscordName', user)
+	if not data or not data.username then return nil end
+	if data.discriminator == nil or data.discriminator == 0 or data.discriminator == '0' then
+		return data.username -- new-style (pomelo) username, no #tag
+	end
+	return data.username .. '#' .. tostring(data.discriminator)
+end
+
+local function GetDiscordAvatar(user)
+	local discordId = getDiscordId(user)
+	if not discordId then
+		logError('GetDiscordAvatar', 'no Discord identifier for this player (is Discord running on their PC?)')
+		return nil
+	end
+
+	local entry = avatarCache[discordId]
+	if entry and entry.expires > now() then return entry.url end
+
+	local data = getUserObject('GetDiscordAvatar', discordId)
+	if not data or not data.avatar then return nil end
+
+	local ext = data.avatar:sub(1, 2) == 'a_' and 'gif' or 'png'
+	local url = ('https://cdn.discordapp.com/avatars/%s/%s.%s'):format(discordId, data.avatar, ext)
+	avatarCache[discordId] = { url = url, expires = now() + AVATAR_CACHE_MS }
+	return url
+end
+
+local function GetDiscordNickname(user, guild)
+	local discordId = getDiscordId(user)
+	if not discordId then
+		logError('GetDiscordNickname', 'no Discord identifier for this player (is Discord running on their PC?)')
+		return nil
+	end
+	local guildId = resolveGuildId(guild, 'GetDiscordNickname')
+	if not guildId then return nil end
+
+	local res = DiscordRequest('GET', ('guilds/%s/members/%s'):format(guildId, discordId))
+	if not isOk(res) then
+		logError('GetDiscordNickname', describe(res.code, res.data))
+		return nil
+	end
+	local data = safeDecode(res.data)
+	if type(data) ~= 'table' then return nil end
+	return data.nick
+end
+
+-- ---------------------------------------------------------------------------
+-- Guild lookups
+-- ---------------------------------------------------------------------------
+
+local function getGuildObject(fn, guild, withCounts)
+	local guildId = resolveGuildId(guild, fn)
+	if not guildId then return nil end
+	local res = DiscordRequest('GET', 'guilds/' .. guildId .. (withCounts and '?with_counts=true' or ''))
+	if not isOk(res) then
+		logError(fn, describe(res.code, res.data))
+		return nil
+	end
+	local data = safeDecode(res.data)
+	if type(data) ~= 'table' then
+		logError(fn, 'unexpected response from Discord')
+		return nil
+	end
+	return data, guildId
+end
+
+local function GetGuildIcon(guild)
+	local data, guildId = getGuildObject('GetGuildIcon', guild)
+	if not data or not data.icon then return nil end
+	local ext = data.icon:sub(1, 2) == 'a_' and 'gif' or 'png'
+	return ('https://cdn.discordapp.com/icons/%s/%s.%s'):format(guildId, data.icon, ext)
+end
+
+local function GetGuildSplash(guild)
+	local data, guildId = getGuildObject('GetGuildSplash', guild)
+	if not data or not data.splash then return nil end
+	return ('https://cdn.discordapp.com/splashes/%s/%s.png'):format(guildId, data.splash)
+end
+
+local function GetGuildName(guild)
+	local data = getGuildObject('GetGuildName', guild)
+	return data and data.name or nil
+end
+
+local function GetGuildDescription(guild)
+	local data = getGuildObject('GetGuildDescription', guild)
+	return data and data.description or nil
+end
+
+local function GetGuildMemberCount(guild)
+	local data = getGuildObject('GetGuildMemberCount', guild, true)
+	return data and data.approximate_member_count or nil
+end
+
+local function GetGuildOnlineMemberCount(guild)
+	local data = getGuildObject('GetGuildOnlineMemberCount', guild, true)
+	return data and data.approximate_presence_count or nil
+end
+
+-- ---------------------------------------------------------------------------
+-- Exports
+-- ---------------------------------------------------------------------------
+
+local API = {
+	GetDiscordRoles = GetDiscordRoles,
+	GetRoleIdFromRoleName = GetRoleIdFromRoleName,
+	GetDiscordAvatar = GetDiscordAvatar,
+	GetDiscordName = GetDiscordName,
+	GetDiscordNickname = GetDiscordNickname,
+	GetGuildIcon = GetGuildIcon,
+	GetGuildSplash = GetGuildSplash,
+	GetGuildName = GetGuildName,
+	GetGuildDescription = GetGuildDescription,
+	GetGuildMemberCount = GetGuildMemberCount,
+	GetGuildOnlineMemberCount = GetGuildOnlineMemberCount,
+	GetGuildRoleList = GetGuildRoleList,
+	ResetCaches = ResetCaches,
+	ClearCache = ClearCache,
+	CheckEqual = CheckEqual,
+	FetchRoleID = FetchRoleID,
+	SetNickname = SetNickname,
+	SetRoles = SetRoles,
+	AddRole = AddRole,
+	RemoveRole = RemoveRole,
+	ChangeDiscordVoice = ChangeDiscordVoice,
 }
-function ResetCaches()
-	Caches = {
-    Avatars = {},
-    RoleList = {},
-  };
+
+for name, fn in pairs(API) do
+	exports(name, fn)
 end
 
-function GetGuildRoleList(guild --[[optional]])
-  local guildId = GetGuildId(guild)
-	if (Caches.RoleList[guildId] == nil) then 
-		local guild = DiscordRequest("GET", "guilds/"..guildId, {})
-		if guild.code == 200 then
-			local data = json.decode(guild.data)
-			-- Image 
-			local roles = data.roles;
-			local roleList = {};
-			for i = 1, #roles do 
-				roleList[roles[i].name] = roles[i].id;
-			end
-			Caches.RoleList[guildId] = roleList;
+-- ---------------------------------------------------------------------------
+-- Startup check
+-- ---------------------------------------------------------------------------
+
+CreateThread(function()
+	if TOKEN == '' then
+		logError('startup', HTTP_STATUS[-1])
+		return
+	end
+
+	local ids = {}
+	if Config.Guild_ID ~= nil and tostring(Config.Guild_ID) ~= '' then
+		ids[#ids + 1] = tostring(Config.Guild_ID)
+	else
+		logError('startup', 'Config.Guild_ID is not set')
+	end
+	if Config.Multiguild then
+		for _, id in pairs(Config.Guilds or {}) do
+			if isSnowflake(id) then ids[#ids + 1] = tostring(id) end
+		end
+	end
+
+	for _, guildId in ipairs(ids) do
+		local res = DiscordRequest('GET', 'guilds/' .. guildId)
+		if isOk(res) then
+			local data = safeDecode(res.data)
+			logInfo(('Connected to guild "%s" (%s)'):format(data and data.name or '?', guildId))
 		else
-			sendDebugMessage("[Badger_Discord_API] An error occured, please check your config and ensure everything is correct. Error: "..(guild.data or guild.code)) 
-			Caches.RoleList[guildId] = nil;
+			logError('startup', ('guild %s: %s'):format(guildId, describe(res.code, res.data)))
 		end
 	end
-	return Caches.RoleList[guildId];
-end
-
-recent_role_cache = {}
-
-function ClearCache(discordId) 
-	if (discordId ~= nil) then 
-		recent_role_cache[discordId] = {};
-	end
-end
-
-function GetDiscordRoles(user, guild --[[optional]])
-  local discordId = nil
-  local guildId = GetGuildId(guild)
-  local roles = nil
-	for _, id in ipairs(GetPlayerIdentifiers(user)) do
-		if string.match(id, "discord:") then
-			discordId = string.gsub(id, "discord:", "")
-			break;
-		end
-	end
-
-	if discordId then
-		-- Get roles for specified guild (or main guild if not specified)
-		roles = GetUserRolesInGuild(discordId, guildId)
-		-- If specified guild or disabled multiguild option, just return this one
-		if guild or Config.Multiguild == false then
-			return roles
-		end
-
-		-- MULTIGUILD SECTION
-		-- Keep main guild roles so we can add the rest on top of this list
-		
-		-- For some reason, referencing roles again will use the global reference that is returned...
-		-- because of that, we use this resetRoles list and repopulate. Probably a better way to do this. -- Needs to be looked into
-		resetRoles = {}
-		for _, role_id in pairs(roles) do 
-			table.insert(resetRoles, role_id);
-		end
-		roles = resetRoles
-		local checkedGuilds = {}
-		-- Loop through guilds in config and get the roles from each one.
-		for _,id in pairs(Config.Guilds) do
-			-- If it's the main guild, we already fetched these roles. NEXT!
-			-- We don't really need this check, but maybe someone used their main guild in this config list....
-			if tostring(id) == guildId then goto skip end
-			if checkedGuilds[id] then goto skip end
-			-- Fetch roles for this guild
-			local guildRoles = GetUserRolesInGuild(discordId, id)
-			checkedGuilds[id] = true
-			-- If it didnt return false due to error, add the roles to the list
-			if type(guildRoles) == "table" then
-				-- Insert each role into roles list
-				for _,v in pairs(guildRoles) do
-					table.insert(roles, v)
-				end
-			end
-			::skip::
-		end
-		return roles
-	else
-		sendDebugMessage("[Badger_Discord_API] ERROR: Discord was not connected to user's Fivem account...")
-		return false
-	end
-	return false
-end
-
-function GetUserRolesInGuild (user, guild)
-	-- Error check before starting operation
-	if not user then
-		sendDebugMessage("[Badger_Discord_API] ERROR: GetUserRolesInGuild requires discord ID")
-		return false
-	end
-	if not guild then
-		sendDebugMessage("[Badger_Discord_API] ERROR: GetUserRolesInGuild requires guild ID")
-		return false
-	end
-
-	-- Check for cached roles
-	if Config.CacheDiscordRoles and recent_role_cache[user] and recent_role_cache[user][guild] then
-		return recent_role_cache[user][guild]
-	end
-
-	-- Request roles for user id
-	local endpoint = ("guilds/%s/members/%s"):format(guild, user)
-	local member = DiscordRequest("GET", endpoint, {})
-	if member.code == 200 then
-		local data = json.decode(member.data)
-		local roles = data.roles
-		if Config.CacheDiscordRoles then
-			recent_role_cache[user] = recent_role_cache[user] or {}
-			recent_role_cache[user][guild] = roles
-			Citizen.SetTimeout(((Config.CacheDiscordRolesTime or 60)*1000), function() recent_role_cache[user][guild] = nil end)
-		end
-		return roles
-	else
-		sendDebugMessage("[Badger_Discord_API] ERROR: Code 200 was not reached... Returning false. [Member Data NOT FOUND] DETAILS: " .. error_codes_defined[member.code])
-		return false
-	end
-end
-
-function GetDiscordNickname(user, guild --[[optional]])
-  local discordId = nil
-  local guildId = GetGuildId(guild)
-	for _, id in ipairs(GetPlayerIdentifiers(user)) do
-		if string.match(id, "discord:") then
-			discordId = string.gsub(id, "discord:", "")
-			break
-		end
-	end
-
-	if discordId then
-		local endpoint = ("guilds/%s/members/%s"):format(guildId, discordId)
-		local member = DiscordRequest("GET", endpoint, {})
-		if member.code == 200 then
-			local data = json.decode(member.data)
-			local nickname = data.nick
-			return nickname;
-		else
-			sendDebugMessage("[Badger_Discord_API] ERROR: Code 200 was not reached. Error Code: " .. error_codes_defined[member.code])
-			return nil;
-		end
-	else
-		sendDebugMessage("[Badger_Discord_API] ERROR: Discord was not connected to user's Fivem account...")
-		return nil;
-	end
-	return nil;
-end
-
-function SetNickname(user, nickname, reason)
-	local discordId = nil
-	for _, id in ipairs(GetPlayerIdentifiers(user)) do
-		if string.match(id, 'discord:') then
-			discordId = string.gsub(id, 'discord:', '')
-			break
-		end
-	end
-
-	if discordId then
-		local name = nickname or ""
-		local endpoint = ("guilds/%s/members/%s"):format(Config.Guild_ID, discordId)
-		local member = DiscordRequest("PATCH", endpoint, json.encode({nick = tostring(name)}), reason)
-		if member.code ~= 200 and member.code ~= 204 then
-			sendDebugMessage("[Badger_Discord_API] ERROR: Code 200 was not reached. Error Code: " .. error_codes_defined[member.code])
-		end
-	end
-end
-
-function AddRole(user, roleId, reason)
-	local discordId = nil
-	for _, id in ipairs(GetPlayerIdentifiers(user)) do
-		if string.match(id, 'discord:') then
-			discordId = string.gsub(id, 'discord:', '')
-			break
-		end
-	end
-
-	if discordId then
-		local roles = GetDiscordRoles(user) or {}
-		local endpoint = ("guilds/%s/members/%s"):format(Config.Guild_ID, discordId)
-		table.insert(roles, roleId)
-		local member = DiscordRequest("PATCH", endpoint, json.encode({roles = roles}), reason)
-		if member.code ~= 200 then
-			sendDebugMessage("[Badger_Discord_API] ERROR: Code 200 was not reached. Error Code: " .. error_codes_defined[member.code])
-		end
-	end
-end
-
-function RemoveRole(user, roleId, reason)
-	local discordId = nil
-	for _, id in ipairs(GetPlayerIdentifiers(user)) do
-		if string.match(id, 'discord:') then
-			discordId = string.gsub(id, 'discord:', '')
-			break
-		end
-	end
-
-	if discordId then
-		local roles = GetDiscordRoles(user) or {}
-		local endpoint = ("guilds/%s/members/%s"):format(Config.Guild_ID, discordId)
-
-		for k, v in pairs(roles) do
-			if v == roleId then
-				roles[k] = nil
-			end
-		end
-
-		local member = DiscordRequest("PATCH", endpoint, json.encode({roles = roles}), reason)
-		if member.code ~= 200 then
-			sendDebugMessage("[Badger_Discord_API] ERROR: Code 200 was not reached. Error Code: " .. error_codes_defined[member.code])
-		end
-	end
-end
-
-function SetRoles(user, roleList, reason)
-	local discordId = nil
-	for _, id in ipairs(GetPlayerIdentifiers(user)) do
-		if string.match(id, 'discord:') then
-			discordId = string.gsub(id, 'discord:', '')
-			break
-		end
-	end
-
-	if discordId then
-		local endpoint = ("guilds/%s/members/%s"):format(Config.Guild_ID, discordId)
-		local member = DiscordRequest("PATCH", endpoint, json.encode({roles = roleList}), reason)
-		if member.code ~= 200 then
-			sendDebugMessage("[Badger_Discord_API] ERROR: Code 200 was not reached. Error Code: " .. error_codes_defined[member.code])
-		end
-	end
-end
-
-function ChangeDiscordVoice(user, voice, reason)
-	local discordId = nil
-	for _, id in ipairs(GetPlayerIdentifiers(user)) do
-		if string.match(id, "discord:") then
-			discordId = string.gsub(id, "discord:", "")
-		end
-	end
-
-	if discordId then
-		local endpoint = ("guilds/%s/members/%s"):format(Config.Guild_ID, discordId)
-		local member = DiscordRequest("PATCH", endpoint, json.encode({channel_id = voice}), reason)
-		if member.code ~= 200 then
-			sendDebugMessage("[Badger_Discord_API] ERROR: Code 200 was not reached. Error Code: " .. error_codes_defined[member.code])
-		end
-	end
-end
-
-Citizen.CreateThread(function()
-  local mguild = DiscordRequest("GET", "guilds/"..Config.Guild_ID, {})
-  if mguild.code == 200 then
-    local data = json.decode(mguild.data)
-    sendDebugMessage("[Badger_Discord_API] Successful connection to Guild : "..data.name.." ("..data.id..")")
-  else
-    sendDebugMessage("[Badger_Discord_API] An error occured, please check your config and ensure everything is correct. Error: "..(mguild.data and json.decode(mguild.data) or mguild.code)) 
-  end
-  if (Config.Multiguild) then 
-    for _,guildID in pairs(Config.Guilds) do
-      local guild = DiscordRequest("GET", "guilds/"..guildID, {})
-      if guild.code == 200 then
-        local data = json.decode(guild.data)
-        sendDebugMessage("[Badger_Discord_API] Successful connection to Guild : "..data.name.." ("..data.id..")")
-      else
-        sendDebugMessage("[Badger_Discord_API] An error occured, please check your config and ensure everything is correct. Error: "..(guild.data and json.decode(guild.data) or guild.code)) 
-      end
-    end
-  end
 end)

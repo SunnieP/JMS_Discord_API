@@ -1,44 +1,19 @@
 fx_version 'cerulean'
 game 'gta5'
+lua54 'yes'
 
-author 'JaredScar'
-description 'Badger\'s Discord API'
-version '1.6'
-url 'https://github.com/JaredScar/Badger_Discord_API'
+name 'JMS_Discord_API'
+author 'SunnieP (fork of Badger_Discord_API by Jared Scarito)'
+description 'Discord REST API wrapper for FiveM: roles, nicknames, member and guild lookups'
+version '2.0.0'
+repository 'https://github.com/SunnieP/JMS_Discord_API'
 
-client_scripts {
-	'client.lua',
-}
+-- Lets scripts that call exports.Badger_Discord_API:<fn>() keep working
+-- while this resource lives in a folder with a different name.
+provide 'Badger_Discord_API'
 
+-- Server only. Exports are registered with exports() inside server.lua.
 server_scripts {
-	"versionChecker.lua",
 	'config.lua',
-	"server.lua", -- Uncomment this line
-	--"example.lua" -- Remove this when you actually start using the script!!!
+	'server.lua',
 }
-
-server_exports { 
-	"GetDiscordRoles",
-	"GetRoleIdFromRoleName",
-	"GetDiscordAvatar",
-	"GetDiscordName",
-	"GetDiscordEmail",
-	"IsDiscordEmailVerified",
-	"GetDiscordNickname",
-	"GetGuildIcon",
-	"GetGuildSplash",
-	"GetGuildName",
-	"GetGuildDescription",
-	"GetGuildMemberCount",
-	"GetGuildOnlineMemberCount",
-	"GetGuildRoleList",
-	"ResetCaches",
-	"CheckEqual",
-	"SetNickname",
-	"SetRoles",
-	"AddRole",
-	"RemoveRole",
-	"ChangeDiscordVoice",
-	"ClearCache",
-	"FetchRoleID"
-} 
