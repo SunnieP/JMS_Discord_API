@@ -12,8 +12,11 @@ import os
 import sys
 import traceback
 
-import lupa
-from lupa import LuaRuntime
+# FiveM runs Lua 5.4 (lua54 'yes'), so test on exactly that. Fall back for older lupa builds.
+try:
+    from lupa.lua54 import LuaRuntime, lua_type
+except ImportError:
+    from lupa import LuaRuntime, lua_type
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -27,7 +30,7 @@ ROLE_NEW = "300000000000000009"
 
 
 def to_py(v):
-    if lupa.lua_type(v) == "table":
+    if lua_type(v) == "table":
         keys = list(v.keys())
         if keys and all(isinstance(k, int) for k in keys) and sorted(keys) == list(range(1, len(keys) + 1)):
             return [to_py(v[i]) for i in range(1, len(keys) + 1)]
@@ -580,5 +583,5 @@ if __name__ == "__main__":
     for name, ok, detail in RESULTS:
         print(f"{'PASS' if ok else 'FAIL'}  {name.ljust(width)}" + ("" if ok else f"\n      {detail}"))
         failed += 0 if ok else 1
-    print(f"\n{len(RESULTS) - failed}/{len(RESULTS)} passed")
+    print(f"\n{len(RESULTS) - failed}/{len(RESULTS)} passed on {LuaRuntime().eval('_VERSION')}")
     sys.exit(1 if failed else 0)
