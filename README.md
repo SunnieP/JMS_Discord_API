@@ -37,12 +37,14 @@ exports.JMS_Discord_API:AddRole(source, 'Founder', 'Granted in city')
 - `guild` is optional: a name from `Config.Guilds`, a guild ID, or `nil` for `Config.Guild_ID`. An unknown guild name is refused instead of silently using the main guild.
 - Discord and network failures never throw. They are printed to the console and the call returns `false` or `nil`.
 - Role arguments accept an ID, a `Config.RoleList` key, or a role name.
+- Functions documented as returning `ok, httpCode` return `ok` first. Whether the second value survives a call from another resource is untested, so rely on `ok` only. Use `GetDiscordRolesEx` when you need to know *why* a lookup failed; it returns a single table for that reason.
 
 ### Functions
 
 | Function | Returns |
 | --- | --- |
 | `GetDiscordRoles(user, guild?)` | array of role ID strings, or `false` |
+| `GetDiscordRolesEx(user, guild?)` | one table: `{ status = 'ok', roles = {...} }` or `{ status = 'no_discord' \| 'not_in_guild' \| 'api_error' \| 'config_error' }` |
 | `GetGuildRoleList(guild?)` | `{ [roleName] = roleId }` or `nil` |
 | `GetRoleIdFromRoleName(name, guild?)` | role ID number or `nil` |
 | `FetchRoleID(role, guild?)` | role ID number or `nil` |

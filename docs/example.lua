@@ -17,6 +17,12 @@ RegisterCommand('discordtest', function(source)
 	-- Roles ------------------------------------------------------------------
 	-- Returns an array of role ID strings, or false (no Discord linked / lookup failed).
 	local roles = api:GetDiscordRoles(source)
+
+	-- Same lookup, but says WHY it failed. One table back:
+	--   { status = 'ok', roles = {...} }
+	--   { status = 'no_discord' | 'not_in_guild' | 'api_error' | 'config_error' }
+	local result = api:GetDiscordRolesEx(source)
+	if result.status == 'not_in_guild' then print('not in our Discord') end
 	if roles then
 		for _, roleId in ipairs(roles) do print('has role', roleId) end
 	end

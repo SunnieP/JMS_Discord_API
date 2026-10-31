@@ -237,7 +237,20 @@ end
 -- Roles (read)
 -- ---------------------------------------------------------------------------
 
--- Returns an array of role IDs (strings) or nil, httpCode on failure.
+-- 'not_in_guild' = Discord says this user is not a member of the guild (expected for non-members).
+-- 'api_error'    = anything else (rate limit, outage, bad token, wrong guild ID, ...).
+local function classifyMemberFailure(res)
+	if res.code == 404 then
+		local data = safeDecode(res.data)
+		-- 10007 = Unknown Member, 10013 = Unknown User
+		if type(data) == 'table' and (data.code == 10007 or data.code == 10013) then
+			return 'not_in_guild'
+		end
+	end
+	return 'api_error'
+end
+
+-- Returns an array of role IDs (strings), or nil plus 'not_in_guild' / 'api_error'.
 local function getUserRolesInGuild(discordId, guildId)
 	local key = guildId .. ':' .. discordId
 	if Config.CacheDiscordRoles then
@@ -249,14 +262,19 @@ local function getUserRolesInGuild(discordId, guildId)
 
 	local res = DiscordRequest('GET', ('guilds/%s/members/%s'):format(guildId, discordId))
 	if not isOk(res) then
-		logError('GetUserRolesInGuild', describe(res.code, res.data))
-		return nil, res.code
+		local reason = classifyMemberFailure(res)
+		if reason == 'not_in_guild' then
+			logDebug(('user %s is not a member of guild %s'):format(discordId, guildId))
+		else
+			logError('GetUserRolesInGuild', describe(res.code, res.data))
+		end
+		return nil, reason
 	end
 
 	local data = safeDecode(res.data)
 	if type(data) ~= 'table' or type(data.roles) ~= 'table' then
 		logError('GetUserRolesInGuild', 'unexpected response from Discord')
-		return nil, res.code
+		return nil, 'api_error'
 	end
 
 	if Config.CacheDiscordRoles then
@@ -268,19 +286,20 @@ local function getUserRolesInGuild(discordId, guildId)
 	return copyArray(data.roles)
 end
 
--- Returns an array of role ID strings, or false if the lookup failed or the player has no Discord linked.
+-- Core lookup. Returns an array of role ID strings, or nil plus a status:
+--   'no_discord'   the player has no Discord identifier (Discord app not running)
+--   'not_in_guild' Discord says they are not a member of the guild
+--   'api_error'    Discord/network problem, bad token, rate limit
+--   'config_error' unknown guild / Config.Guild_ID not set
 -- With Config.Multiguild and no `guild`, roles from every guild in Config.Guilds are merged (deduplicated).
-local function GetDiscordRoles(user, guild)
+local function lookupDiscordRoles(user, guild)
 	local discordId = getDiscordId(user)
-	if not discordId then
-		logError('GetDiscordRoles', 'no Discord identifier for this player (is Discord running on their PC?)')
-		return false
-	end
+	if not discordId then return nil, 'no_discord' end
 	local guildId = resolveGuildId(guild, 'GetDiscordRoles')
-	if not guildId then return false end
+	if not guildId then return nil, 'config_error' end
 
-	local roles = getUserRolesInGuild(discordId, guildId)
-	if not roles then return false end
+	local roles, reason = getUserRolesInGuild(discordId, guildId)
+	if not roles then return nil, reason end
 
 	if guild ~= nil or not Config.Multiguild then
 		return roles
@@ -303,6 +322,28 @@ local function GetDiscordRoles(user, guild)
 		end
 	end
 	return roles
+end
+
+-- Returns an array of role ID strings, or false if the lookup failed or the player has no Discord linked.
+local function GetDiscordRoles(user, guild)
+	local roles, status = lookupDiscordRoles(user, guild)
+	if not roles then
+		if status == 'no_discord' then
+			logError('GetDiscordRoles', 'no Discord identifier for this player (is Discord running on their PC?)')
+		end
+		return false
+	end
+	return roles
+end
+
+-- Same lookup as GetDiscordRoles, but tells you WHY it failed. Always returns ONE table:
+--   { status = 'ok', roles = { ... } }
+--   { status = 'no_discord' | 'not_in_guild' | 'api_error' | 'config_error' }
+-- Use this when you must tell "not in the Discord" apart from "Discord is having a bad day".
+local function GetDiscordRolesEx(user, guild)
+	local roles, status = lookupDiscordRoles(user, guild)
+	if roles then return { status = 'ok', roles = roles } end
+	return { status = status }
 end
 
 -- ---------------------------------------------------------------------------
@@ -582,6 +623,7 @@ end
 
 local API = {
 	GetDiscordRoles = GetDiscordRoles,
+	GetDiscordRolesEx = GetDiscordRolesEx,
 	GetRoleIdFromRoleName = GetRoleIdFromRoleName,
 	GetDiscordAvatar = GetDiscordAvatar,
 	GetDiscordName = GetDiscordName,

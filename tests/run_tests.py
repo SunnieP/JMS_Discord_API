@@ -531,6 +531,49 @@ def token_is_not_in_the_repo():
     assert "Bot_Token" not in cfg, "token must come from the discord_bot_token convar"
 
 
+@test
+def roles_ex_reports_ok_with_roles():
+    e = Env()
+    e.route("GET", member_ep, 200, {"roles": [ROLE_A, ROLE_B]})
+    assert e.call("GetDiscordRolesEx", 1) == {"status": "ok", "roles": [ROLE_A, ROLE_B]}
+
+
+@test
+def roles_ex_tells_not_in_guild_apart_from_api_error():
+    """DiscordAcePerms needs this: 'not a member' must not look the same as 'Discord is down'."""
+    e = Env()
+    e.route("GET", member_ep, 404, {"code": 10007, "message": "Unknown Member"})
+    assert e.call("GetDiscordRolesEx", 1) == {"status": "not_in_guild"}
+    e2 = Env()
+    e2.route("GET", member_ep, 500, None)
+    assert e2.call("GetDiscordRolesEx", 1) == {"status": "api_error"}
+    e3 = Env()
+    e3.route("GET", member_ep, 404, {"code": 10004, "message": "Unknown Guild"})
+    assert e3.call("GetDiscordRolesEx", 1) == {"status": "api_error"}, "wrong guild ID is a config problem, not 'not a member'"
+    e4 = Env()
+    e4.route("GET", member_ep, 429, {"retry_after": 0.1})
+    assert e4.call("GetDiscordRolesEx", 1) == {"status": "api_error"}
+
+
+@test
+def roles_ex_no_discord_and_bad_guild():
+    e = Env(players={})
+    assert e.call("GetDiscordRolesEx", 1) == {"status": "no_discord"}
+    e2 = Env()
+    assert e2.call("GetDiscordRolesEx", 1, "typo-guild") == {"status": "config_error"}
+    assert not e2.sent
+
+
+@test
+def not_in_guild_is_not_logged_as_an_error():
+    """Non-members are expected on a whitelisted server; they must not spam the console."""
+    e = Env()
+    e.route("GET", member_ep, 404, {"code": 10007, "message": "Unknown Member"})
+    e.call("GetDiscordRolesEx", 1)
+    assert e.output() == "", e.output()
+    assert e.call("GetDiscordRoles", 1) is False
+
+
 if __name__ == "__main__":
     width = max(len(n) for n, _, _ in RESULTS)
     failed = 0
