@@ -3,7 +3,7 @@
 -- Use `set`, not `setr` (setr would replicate the token to every client).
 
 Config = {
-	Guild_ID = '', -- ID of your Discord server (your primary server if Multiguild is on)
+	Guild_ID = '1551321843502284901', -- ID of your Discord server (your primary server if Multiguild is on)
 
 	Multiguild = false, -- true = GetDiscordRoles() with no guild argument also merges roles from every guild in Guilds
 	Guilds = {
