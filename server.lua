@@ -651,6 +651,34 @@ for name, fn in pairs(API) do
 end
 
 -- ---------------------------------------------------------------------------
+-- Console diagnostic: jms_discord_test <discord user ID>
+-- Runs the same member lookup the whitelist uses, outside any player connection, and reports the result and time taken.
+-- ---------------------------------------------------------------------------
+
+RegisterCommand('jms_discord_test', function(source, args)
+	if source ~= 0 then return end -- server console only
+	local discordId = args[1]
+	if not discordId or not isSnowflake(discordId) then
+		print('Usage: jms_discord_test <Discord user ID>')
+		return
+	end
+	local guildId = Config.Guild_ID and tostring(Config.Guild_ID) or ''
+	if guildId == '' then
+		print('[JMS_Discord_API] Config.Guild_ID is not set')
+		return
+	end
+	local started = GetGameTimer()
+	local res = DiscordRequest('GET', ('guilds/%s/members/%s'):format(guildId, discordId))
+	local ms = GetGameTimer() - started
+	print(('[JMS_Discord_API] test lookup: %s after %d ms'):format(describe(res.code, res.data), ms))
+	if isOk(res) then
+		local data = safeDecode(res.data)
+		local n = type(data) == 'table' and type(data.roles) == 'table' and #data.roles or 0
+		print(('[JMS_Discord_API] test lookup OK: member has %d role(s)'):format(n))
+	end
+end, true)
+
+-- ---------------------------------------------------------------------------
 -- Startup check
 -- ---------------------------------------------------------------------------
 

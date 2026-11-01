@@ -157,6 +157,7 @@ json = { encode = function(t) return py_json_enc(t) end, decode = function(s) re
 
 GetConvar = function(name, default) return py_convar(name, default) end
 GetGameTimer = function() return py_now() end
+RegisterCommand = function(name, fn, restricted) COMMANDS = COMMANDS or {}; COMMANDS[name] = fn end
 GetPlayerIdentifierByType = function(src, kind) return py_ident(src, kind) end
 GetCurrentResourceName = function() return "JMS_Discord_API" end
 CreateThread = function(fn) py_thread(fn) end
