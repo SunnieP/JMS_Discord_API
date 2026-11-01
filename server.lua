@@ -148,8 +148,15 @@ local function DiscordRequest(method, endpoint, body, reason)
 	end
 
 	local res
+	local retriedTimeout = false
 	for attempt = 1, MAX_ATTEMPTS do
 		res = rawRequest(method, endpoint, payload, reason)
+		-- A timeout on a read is safe to try once more (a blip should not reject a player). Writes are never repeated.
+		if res.code == 0 and method == 'GET' and not retriedTimeout then
+			retriedTimeout = true
+			logDebug(('no response for GET %s, retrying once'):format(endpoint))
+			res = rawRequest(method, endpoint, payload, reason)
+		end
 		if res.code ~= 429 or attempt == MAX_ATTEMPTS then break end
 
 		local waitSeconds = tonumber(headerValue(res.headers, 'retry-after'))

@@ -294,6 +294,18 @@ def no_response_times_out_instead_of_hanging():
 
 
 @test
+def a_timed_out_read_is_retried_once_but_a_timed_out_write_is_not():
+    e = Env()
+    e.never_respond("GET", f"users/{USER}")
+    e.call("GetDiscordName", 1)
+    assert len(e.requests("GET")) == 2, len(e.requests("GET"))
+    e = Env()
+    e.never_respond("PUT", f"guilds/{GUILD}/members/{USER}/roles/{ROLE_A}")
+    e.call("AddRole", 1, ROLE_A)
+    assert len(e.requests("PUT")) == 1, len(e.requests("PUT"))
+
+
+@test
 def retries_429_then_succeeds():
     """Bug 9: no 429 handling."""
     e = Env()
